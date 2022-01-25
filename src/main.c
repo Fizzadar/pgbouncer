@@ -184,6 +184,7 @@ static bool set_defer_accept(struct CfValue *cv, const char *val);
 #define DEFER_OPS {set_defer_accept, cf_get_int}
 
 static const struct CfLookup auth_type_map[] = {
+	{ "blind", AUTH_BLIND },
 	{ "any", AUTH_ANY },
 	{ "trust", AUTH_TRUST },
 	{ "plain", AUTH_PLAIN },
