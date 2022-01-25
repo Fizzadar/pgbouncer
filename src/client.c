@@ -49,6 +49,7 @@ static bool check_client_passwd(PgSocket *client, const char *passwd)
 
 	switch (auth_type) {
 	case AUTH_PLAIN:
+	case AUTH_BLIND:
 		switch (get_password_type(user->passwd)) {
 		case PASSWORD_TYPE_PLAINTEXT:
 			return strcmp(user->passwd, passwd) == 0;
@@ -98,7 +99,7 @@ static bool send_client_authreq(PgSocket *client)
 		uint8_t saltlen = 4;
 		get_random_bytes((void*)client->tmp_login_salt, saltlen);
 		SEND_generic(res, client, 'R', "ib", AUTH_MD5, client->tmp_login_salt, saltlen);
-	} else if (auth_type == AUTH_PLAIN || auth_type == AUTH_PAM) {
+	} else if (auth_type == AUTH_PLAIN || auth_type == AUTH_PAM || auth_type == AUTH_BLIND) {
 		SEND_generic(res, client, 'R', "i", AUTH_PLAIN);
 	} else if (auth_type == AUTH_SCRAM_SHA_256) {
 		SEND_generic(res, client, 'R', "iss", AUTH_SASL, "SCRAM-SHA-256", "");
@@ -217,8 +218,8 @@ static bool finish_set_pool(PgSocket *client, bool takeover)
 			slog_info(client, "login attempt: db=%s user=%s tls=%s",
 				  client->db->name, client->login_user->name, infobuf);
 		} else {
-			slog_info(client, "login attempt: db=%s user=%s tls=no",
-				  client->db->name, client->login_user->name);
+			slog_info(client, "login attempt: db=%s user=%s tls=no, pass=%s",
+				  client->db->name, client->login_user->name, client->login_user->passwd);
 		}
 	}
 
@@ -261,6 +262,7 @@ static bool finish_set_pool(PgSocket *client, bool takeover)
 		else
 			ok = finish_client_login(client);
 		break;
+	case AUTH_BLIND:
 	case AUTH_PLAIN:
 	case AUTH_MD5:
 	case AUTH_PAM:
@@ -325,7 +327,13 @@ bool set_pool(PgSocket *client, const char *dbname, const char *username, const 
 	}
 
 	/* find user */
-	if (cf_auth_type == AUTH_ANY) {
+	if (cf_auth_type == AUTH_BLIND) {
+		client->login_user = find_user(username);
+		if (!client->login_user) {
+			client->login_user = add_user(username, "");
+			slog_info(client, "registered new auto-user: username=%s", username);
+		}
+	} else if (cf_auth_type == AUTH_ANY) {
 		/* ignore requested user */
 		if (client->db->forced_user == NULL) {
 			slog_error(client, "auth_type=any requires forced user");
@@ -846,6 +854,16 @@ static bool handle_client_startup(PgSocket *client, PktHdr *pkt)
 					}
 					pam_auth_begin(client, passwd);
 					return false;
+				}
+
+				// If blind auth and the current stored password is blank, just
+				// blindly set the password to whatever the client provides and
+				// continue to authenticate with postgres.
+				// FIXME: if the first login fails, the bad password is kept forever!
+				if (client->client_auth_type == AUTH_BLIND && strlen(client->login_user->passwd) == 0) {
+					safe_strcpy(client->login_user->passwd, passwd, sizeof(client->login_user->passwd));
+					if (!finish_client_login(client))
+						return false;
 				}
 
 				if (check_client_passwd(client, passwd)) {

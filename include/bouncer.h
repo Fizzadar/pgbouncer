@@ -160,6 +160,7 @@ extern int cf_sbuf_len;
  */
 
 /* no-auth modes */
+#define AUTH_BLIND -2  /* same as any but without requiring forced user */
 #define AUTH_ANY	-1 /* same as trust but without username check */
 #define AUTH_TRUST	AUTH_OK
 
